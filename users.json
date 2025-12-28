@@ -13,8 +13,8 @@
   },
   "6298245645": {
     "username": "✱",
-    "galda_size": 64,
-    "cookies_lost": 0,
+    "galda_size": 35,
+    "cookies_lost": 1,
     "created_at": "2025-12-28T19:43:02.451913"
   },
   "8328052152": {
@@ -22,5 +22,11 @@
     "galda_size": 66,
     "cookies_lost": 0,
     "created_at": "2025-12-28T19:43:02.627543"
+  },
+  "6240539632": {
+    "username": "QwaYer",
+    "galda_size": 37,
+    "cookies_lost": 0,
+    "created_at": "2025-12-28T19:43:51.064736"
   }
 }
