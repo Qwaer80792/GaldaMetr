@@ -4,8 +4,15 @@ import json
 import time
 import threading
 import os
+from dotenv import load_dotenv
 
-TelegramBotToken = os.getenv('TELEGRAM_BOT_TOKEN', '8129099142:AAFIDgn3njqe3uTKV5pbJLH6Pypc8xsWuF8')
+# Загружаем переменные окружения
+load_dotenv()
+
+TelegramBotToken = os.getenv('TELEGRAM_BOT_TOKEN')
+
+if not TelegramBotToken:
+    raise ValueError("TELEGRAM_BOT_TOKEN не найден в переменных окружения")
 
 INITIAL_GALDA_SIZE = 50
 COOKIE_GAME_DURATION = 120
@@ -36,26 +43,29 @@ game_state = GameState()
 
 def load_users():
     try:
-        users_file = os.path.join(os.path.dirname(__file__), 'users.json')
-        with open(users_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-            if content.strip():
-                return json.loads(content)
+        # На Render.com используем относительный путь
+        users_file = 'users.json'
+        if os.path.exists(users_file):
+            with open(users_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if content.strip():
+                    return json.loads(content)
     except Exception as e:
         print(f"Ошибка загрузки users.json: {e}")
     return {}
 
 def save_users(users_data):
     try:
-        users_file = os.path.join(os.path.dirname(__file__), 'users.json')
+        users_file = 'users.json'
         with open(users_file, 'w', encoding='utf-8') as f:
             json.dump(users_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
 
-users_file = os.path.join(os.path.dirname(__file__), 'users.json')
+# Инициализация файла users.json
+users_file = 'users.json'
 if not os.path.exists(users_file):
-    print(f"Создаю файл users.json: {users_file}")
+    print(f"Создаю файл users.json")
     with open(users_file, 'w', encoding='utf-8') as f:
         json.dump({}, f)
 
@@ -434,7 +444,6 @@ def show_all_stat(message):
 
     stat_text = "🏆 Топ галдунов:\n\n"
 
-    # Убираем ограничение в 10 пользователей
     for idx, (user_id, user_data) in enumerate(sorted_users_list, 1):
         username = get_user_display_name(user_id)
         size = user_data.get('galda_size', 0)
@@ -455,11 +464,11 @@ def reload_users_command(message):
 # Главный блок запуска
 if __name__ == "__main__":
     print("=" * 50)
-    print("Бот запускается на PythonAnywhere...")
+    print("Бот запускается на Render.com...")
     print(f"Токен: {'установлен' if TelegramBotToken else 'не найден'}")
     print(f"Пользователей в базе: {len(users)}")
     print(f"Текущая директория: {os.getcwd()}")
-    print(f"Файл users.json: {os.path.join(os.path.dirname(__file__), 'users.json')}")
+    print(f"Файл users.json: {os.path.join(os.getcwd(), 'users.json')}")
     print("=" * 50)
 
     try:
