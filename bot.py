@@ -1,10 +1,10 @@
 import random
 import telebot
-import json
 import time
 import threading
 import os
 from dotenv import load_dotenv
+from database import db  # Импортируем базу данных
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -41,63 +41,20 @@ class GameState:
 
 game_state = GameState()
 
-def load_users():
-    try:
-        # На Render.com используем относительный путь
-        users_file = 'users.json'
-        if os.path.exists(users_file):
-            with open(users_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if content.strip():
-                    return json.loads(content)
-    except Exception as e:
-        print(f"Ошибка загрузки users.json: {e}")
-    return {}
-
-def save_users(users_data):
-    try:
-        users_file = 'users.json'
-        with open(users_file, 'w', encoding='utf-8') as f:
-            json.dump(users_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Ошибка сохранения: {e}")
-
-# Инициализация файла users.json
-users_file = 'users.json'
-if not os.path.exists(users_file):
-    print(f"Создаю файл users.json")
-    with open(users_file, 'w', encoding='utf-8') as f:
-        json.dump({}, f)
-
-users = load_users()
-print(f"Загружено пользователей: {len(users)}")
-
 def ensure_user_exists(user_id, username=None):
-    if user_id not in users:
-        users[user_id] = {
-            "galda_size": INITIAL_GALDA_SIZE,
-            "cookies_lost": 0,
-            "username": username or f"user_{user_id}"
-        }
-        save_users(users)
-        return True
-    else:
-        if username and users[user_id].get("username") != username:
-            users[user_id]["username"] = username
-            save_users(users)
-    return False
+    """Создает пользователя если его нет"""
+    return db.ensure_user_exists(str(user_id), username)
 
 def get_user_display_name(user_id):
-    if user_id in users and "username" in users[user_id]:
-        return users[user_id]["username"]
+    """Получает отображаемое имя пользователя"""
+    user = db.get_user(str(user_id))
+    if user:
+        return user['username']
     return f"user_{user_id}"
 
 def get_random_players(count=5):
     """Получает случайных игроков из всех пользователей"""
-    user_list = list(users.keys())
-    if len(user_list) <= count:
-        return user_list.copy()
-    return random.sample(user_list, min(count, len(user_list)))
+    return db.get_random_users(min(count, 10))
 
 def start_roulette_animation(chat_id, players, original_message_id):
     with game_state.lock:
@@ -189,11 +146,17 @@ def start_roulette_animation(chat_id, players, original_message_id):
     apply_cookie_penalty(chat_id, loser_id, players)
 
 def apply_cookie_penalty(chat_id, loser_id, players):
-    if loser_id in users:
+    """Применяет штраф за проигрыш в печеньку"""
+    user = db.get_user(loser_id)
+    if user:
         penalty = random.randint(15, 35)
-        old_size = users[loser_id]["galda_size"]
-        users[loser_id]["galda_size"] = max(5, old_size - penalty)
-        users[loser_id]["cookies_lost"] = users[loser_id].get("cookies_lost", 0) + 1
+        old_size = user['galda_size']
+        new_size = max(5, old_size - penalty)
+        
+        # Обновляем в базе
+        db.update_user_galda(loser_id, new_size)
+        db.increment_cookies_lost(loser_id)
+        
         loser_name = get_user_display_name(loser_id)
 
         participants_text = "Участники рулетки:\n"
@@ -202,15 +165,14 @@ def apply_cookie_penalty(chat_id, loser_id, players):
             marker = "🎯" if player_id == loser_id else "🔹"
             participants_text += f"{marker} {i}. {player_name}\n"
 
+        user_after = db.get_user(loser_id)
         result = (
             f"🍪 Печенька cъедена!\n\n"
             f"{participants_text}\n"
             f"💀 Проиграл: {loser_name}\n"
             f"📉 Его галда уменьшилась на {penalty} анечек!\n"
-            f"🍪 Теперь у него {users[loser_id]['cookies_lost']} проигранных печенек!"
+            f"🍪 Теперь у него {user_after['cookies_lost']} проигранных печенек!"
         )
-
-        save_users(users)
 
         try:
             bot.send_message(chat_id, result)
@@ -284,27 +246,31 @@ def send_random_message(message):
         "увеличилась в размерах", "немного уменьшилась"
     ]
     random_phrase = random.choice(phrases)
-    current_size = users[user_id]["galda_size"]
+    
+    user = db.get_user(user_id)
+    if not user:
+        bot.reply_to(message, "Ошибка: пользователь не найден!")
+        return
+    
+    current_size = user['galda_size']
 
     if "увеличилась" in random_phrase or "выросла" in random_phrase:
         change = random.randint(5, 15)
-        users[user_id]["galda_size"] += change
-        response = f"Твоя галда {random_phrase} на {change} анечек! Теперь она {users[user_id]['galda_size']} анечек!"
+        new_size = current_size + change
+        db.update_user_galda(user_id, new_size)
+        response = f"Твоя галда {random_phrase} на {change} анечек! Теперь она {new_size} анечек!"
     elif "уменьшилась" in random_phrase or "сдулась" in random_phrase:
         change = random.randint(5, 15)
-        users[user_id]["galda_size"] = max(0, users[user_id]["galda_size"] - change)
-        response = f"Твоя галда {random_phrase} на {change} анечек! Теперь она {users[user_id]['galda_size']} анечек!"
+        new_size = max(0, current_size - change)
+        db.update_user_galda(user_id, new_size)
+        response = f"Твоя галда {random_phrase} на {change} анечек! Теперь она {new_size} анечек!"
     else:
-        response = f"Твоя галда {random_phrase}! Размер: {users[user_id]['galda_size']} анечек"
+        response = f"Твоя галда {random_phrase}! Размер: {current_size} анечек"
 
-    save_users(users)
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=["cookie"])
 def start_cookie_game(message):
-    global users
-    users = load_users()
-
     current_time = time.time()
 
     with game_state.lock:
@@ -419,56 +385,66 @@ def show_my_stat(message):
     if message.from_user.last_name:
         username += " " + message.from_user.last_name
     ensure_user_exists(user_id, username)
-    user_data = users[user_id]
+    
+    user = db.get_user(user_id)
+    if not user:
+        bot.reply_to(message, "Ошибка: пользователь не найден!")
+        return
+    
+    created_at = user.get('created_at', '')
+    if created_at and isinstance(created_at, str) and len(created_at) > 10:
+        created_date = created_at[:10]
+    else:
+        created_date = "сегодня"
+    
     response = (
         f"📊 Твоя статистика:\n"
-        f"👤 Имя: {user_data['username']}\n"
-        f"📏 Размер галды: {user_data['galda_size']} анечек\n"
-        f"🍪 Проиграно печенек: {user_data.get('cookies_lost', 0)}"
+        f"👤 Имя: {user['username']}\n"
+        f"📏 Размер галды: {user['galda_size']} анечек\n"
+        f"🍪 Проиграно печенек: {user['cookies_lost']}\n"
+        f"📅 Зарегистрирован: {created_date}"
     )
     bot.reply_to(message, response)
 
 @bot.message_handler(commands=["all_stat"])
 def show_all_stat(message):
-    # Обновляем данные перед показом статистики
-    global users
-    users = load_users()
+    try:
+        all_users = db.get_all_users()
+        
+        if not all_users:
+            bot.reply_to(message, "Пока нет данных о пользователях")
+            return
 
-    if not users:
-        bot.reply_to(message, "Пока нет данных о пользователях")
-        return
-
-    sorted_users_list = sorted(users.items(),
-                         key=lambda x: x[1].get('galda_size', 0),
-                         reverse=True)
-
-    stat_text = "🏆 Топ галдунов:\n\n"
-
-    for idx, (user_id, user_data) in enumerate(sorted_users_list, 1):
-        username = get_user_display_name(user_id)
-        size = user_data.get('galda_size', 0)
-        cookies_lost = user_data.get('cookies_lost', 0)
-        stat_text += f"{idx}. {username}: {size} анечек ({cookies_lost}🍪)\n"
-        if len(stat_text) > 3000:
-            stat_text += f"\n... и еще {len(sorted_users_list) - idx} пользователей"
-            break
-
-    bot.reply_to(message, stat_text)
-
-@bot.message_handler(commands=["reload_users"])
-def reload_users_command(message):
-    global users
-    users = load_users()
-    bot.reply_to(message, f"База пользователей обновлена! Всего пользователей: {len(users)}")
+        stat_text = "🏆 Топ галдунов:\n\n"
+        
+        for idx, user in enumerate(all_users, 1):
+            username = user['username']
+            size = user['galda_size']
+            cookies_lost = user['cookies_lost']
+            medal = ""
+            
+            if idx == 1: medal = "🥇"
+            elif idx == 2: medal = "🥈"
+            elif idx == 3: medal = "🥉"
+            
+            stat_text += f"{medal}{idx}. {username}: {size} анечек ({cookies_lost}🍪)\n"
+            
+            if len(stat_text) > 3500:
+                stat_text += f"\n... и еще {len(all_users) - idx} пользователей"
+                break
+        
+        bot.reply_to(message, stat_text)
+        
+    except Exception as e:
+        print(f"Ошибка при получении статистики: {e}")
+        bot.reply_to(message, "Ошибка при получении статистики")
 
 # Главный блок запуска
 if __name__ == "__main__":
     print("=" * 50)
     print("Бот запускается на Render.com...")
     print(f"Токен: {'установлен' if TelegramBotToken else 'не найден'}")
-    print(f"Пользователей в базе: {len(users)}")
     print(f"Текущая директория: {os.getcwd()}")
-    print(f"Файл users.json: {os.path.join(os.getcwd(), 'users.json')}")
     print("=" * 50)
 
     try:
