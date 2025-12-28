@@ -442,7 +442,7 @@ def show_all_stat(message):
 # Главный блок запуска
 if __name__ == "__main__":
     print("=" * 50)
-    print("Бот запускается на Render.com...")
+    print("Бот запускается...")
     print(f"Токен: {'установлен' if TelegramBotToken else 'не найден'}")
     print(f"Текущая директория: {os.getcwd()}")
     print("=" * 50)
