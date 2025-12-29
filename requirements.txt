@@ -4,3 +4,5 @@ pyTelegramBotAPI
 python-dotenv
 flask
 telebot
+flask-sqlalchemy
+psycopg2-binary

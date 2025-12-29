@@ -1,511 +1,133 @@
-    import os
-    import random
-    import json
-    import time
-    import threading
-    from datetime import datetime
-    from flask import Flask, render_template_string
-    import telebot
+import os
+import random
+import time
+import threading
+from datetime import datetime
+from flask import Flask, render_template_string
+import telebot
+from models import db, User, Cooldown
 
-    # Лучше использовать переменные окружения для конфиденциальных данных
-    TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_DEFAULT_TOKEN_HERE")
-    PORT = int(os.environ.get("PORT", 5000))
+# ===== НАСТРОЙКИ =====
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = 5000
 
-    app = Flask(__name__)
+app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+}
+db.init_app(app)
 
-    @app.route('/')
-    def home():
-        return render_template_string("""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Galda Bot</title>
-            <style>
-                body { font-family: Arial; text-align: center; padding: 50px; background: #f0f0f0; }
-                .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-                h1 { color: #4a00e0; }
-                .status { color: green; font-weight: bold; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🎯 Galda Bot</h1>
-                <p class="status">✅ БОТ АКТИВЕН</p>
-                <p>Telegram бот для измерения галды</p>
-                <p>Работает на Replit.com</p>
-            </div>
-        </body>
-        </html>
-        """)
+with app.app_context():
+    db.create_all()
 
-    @app.route('/health')
-    def health():
-        return {"status": "ok", "time": datetime.now().isoformat()}
+@app.route('/')
+def home():
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Galda Bot</title>
+        <style>
+            body { font-family: Arial; text-align: center; padding: 50px; background: #f0f0f0; }
+            .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+            h1 { color: #4a00e0; }
+            .status { color: green; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎯 Galda Bot</h1>
+            <p class="status">✅ БОТ АКТИВЕН (PostgreSQL)</p>
+            <p>Telegram бот для измерения галды</p>
+            <p>Работает на Replit.com</p>
+        </div>
+    </body>
+    </html>
+    """)
 
-    def run_web():
-        app.run(host='0.0.0.0', port=PORT)
+# ===== ТЕЛЕГРАМ БОТ =====
+bot = telebot.TeleBot(TOKEN)
 
-    bot = telebot.TeleBot(TOKEN)
+def ensure_user_exists(user_id, username=None):
+    user_id_str = str(user_id)
+    with app.app_context():
+        user = db.session.get(User, user_id_str)
+        if not user:
+            user = User(id=user_id_str, username=username or f"user_{user_id_str}")
+            db.session.add(user)
+            db.session.commit()
+            return True
+        elif username and user.username != username:
+            user.username = username
+            db.session.commit()
+    return False
 
-    USERS_FILE = 'users.json'
-    COOLDOWN_FILE = 'cooldowns.json'
-    COOKIE_COOLDOWN_FILE = 'cookie_cd.json'
-
-    # Глобальные переменные с блокировками для потокобезопасности
-    users = {}
-    cooldowns = {}
-    cookie_cooldown_data = {}
-    active_game = None
-    data_lock = threading.Lock()
-    game_lock = threading.Lock()
-
-    def load_data(filename, default={}):
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return default
-
-    def save_data(filename, data):
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Ошибка сохранения {filename}: {e}")
-
-    def load_all_data():
-        global users, cooldowns, cookie_cooldown_data
-        with data_lock:
-            users = load_data(USERS_FILE)
-            cooldowns = load_data(COOLDOWN_FILE)
-            cookie_cooldown_data = load_data(COOKIE_COOLDOWN_FILE)
-
-    def save_all_data():
-        with data_lock:
-            save_data(USERS_FILE, users)
-            save_data(COOLDOWN_FILE, cooldowns)
-            save_data(COOKIE_COOLDOWN_FILE, cookie_cooldown_data)
-
-    def auto_save():
-        while True:
-            time.sleep(300)  # 5 минут
-            save_all_data()
-
-    def ensure_user_exists(user_id, username=None):
-        user_id_str = str(user_id)
-        with data_lock:
-            if user_id_str not in users:
-                users[user_id_str] = {
-                    "username": username or f"user_{user_id_str}",
-                    "galda_size": 50,
-                    "cookies_lost": 0,
-                    "created_at": datetime.now().isoformat()
-                }
-                return True
-            elif username and users[user_id_str].get("username") != username:
-                users[user_id_str]["username"] = username
-                return False
-        return False
-
-    def get_user_display_name(user_id):
-        user_id_str = str(user_id)
-        with data_lock:
-            if user_id_str in users and "username" in users[user_id_str]:
-                return users[user_id_str]["username"]
-        return f"user_{user_id_str}"
-
-    def get_random_players(count=5):
-        with data_lock:
-            user_list = list(users.keys())
-            if len(user_list) <= count:
-                return user_list.copy()
-            return random.sample(user_list, min(count, len(user_list)))
-
-    def check_cooldown(user_id, cooldown_time=1800):
-        user_id_str = str(user_id)
-        current_time = time.time()
-
-        with data_lock:
-            if user_id_str in cooldowns:
-                elapsed = current_time - cooldowns[user_id_str]
-                if elapsed < cooldown_time:
-                    remaining = cooldown_time - elapsed
-                    hours = int(remaining // 3600)
-                    minutes = int((remaining % 3600) // 60)
-                    return False, f"⏳ Нельзя так часто! Попробуй через {hours}ч {minutes}мин."
-            cooldowns[user_id_str] = current_time
-
-        return True, None
-
-    @bot.message_handler(commands=["start"])
-    def send_start_message(message):
-        user_id = message.from_user.id
-        username = message.from_user.first_name
-        if message.from_user.last_name:
-            username += " " + message.from_user.last_name
-
-        ensure_user_exists(user_id, username)
-
-        welcome_text = """👋 Привет это бот мерит твою галду!
-    Добавь его в группу что бы соревноваться в размере с кентами!
-
-    📌 Основные команды:
-    /galda, /galdafon, /galdishechka, /galdazaraza - измерить галду
-    /my_stat - моя статистика
-    /all_stat - топ всех игроков
-    /cookie - игра в печеньку
-    /cookie_stats - статус игры
-
-    💡 Галда меняется случайно каждый раз!"""
-
-        bot.reply_to(message, welcome_text)
-
-    @bot.message_handler(commands=["help"])
-    def send_help_message(message):
-        help_text = """<<Основные команды>>
-    /start, /help, /galda, /galdafon, /galdishechka, /galdazaraza
-    /my_stat, /all_stat, /cookie, /cookie_stats"""
-        bot.reply_to(message, help_text)
-
-    @bot.message_handler(commands=["galda", "galdafon", "galdishechka", "galdazaraza"])
-    def send_random_message(message):
-        user_id = message.from_user.id
-        username = message.from_user.first_name
-        if message.from_user.last_name:
-            username += " " + message.from_user.last_name
-
-        ensure_user_exists(user_id, username)
-
-        can_proceed, error_msg = check_cooldown(user_id)
-        if not can_proceed:
-            bot.reply_to(message, error_msg)
-            return
-
-        phrases = [
-            "увеличилась", "уменьшилась", "сдулась", "выросла",
-            "увеличилась в размерах", "немного уменьшилась"
-        ]
-        random_phrase = random.choice(phrases)
-
-        with data_lock:
-            current_size = users[str(user_id)]["galda_size"]
-
-            if "увеличилась" in random_phrase or "выросла" in random_phrase:
-                change = random.randint(5, 15)
-                users[str(user_id)]["galda_size"] += change
-                response = f"🎯 Твоя галда {random_phrase} на {change} анечек!\n📏 Теперь она {users[str(user_id)]['galda_size']} анечек!"
-            elif "уменьшилась" in random_phrase or "сдулась" in random_phrase:
-                change = random.randint(5, 15)
-                users[str(user_id)]["galda_size"] = max(1, users[str(user_id)]["galda_size"] - change)
-                response = f"🎯 Твоя галда {random_phrase} на {change} анечек!\n📏 Теперь она {users[str(user_id)]['galda_size']} анечек!"
-            else:
-                response = f"🎯 Твоя галда {random_phrase}!\n📏 Размер: {users[str(user_id)]['galda_size']} анечек"
-
-        bot.reply_to(message, response)
-
-    @bot.message_handler(commands=["my_stat"])
-    def show_my_stat(message):
-        user_id = message.from_user.id
-        username = message.from_user.first_name
-        if message.from_user.last_name:
-            username += " " + message.from_user.last_name
-
-        ensure_user_exists(user_id, username)
-
-        with data_lock:
-            user_data = users[str(user_id)]
-            size = user_data['galda_size']
-
-        if size >= 100:
-            status = "🏆 ГИГАНТСКАЯ ГАЛДА"
-        elif size >= 70:
-            status = "🔥 БОЛЬШАЯ ГАЛДА"
-        elif size >= 50:
-            status = "👍 НОРМАЛЬНАЯ ГАЛДА"
-        elif size >= 30:
-            status = "📏 СРЕДНЯЯ ГАЛДА"
+def check_cooldown(user_id, cooldown_time=1800):
+    user_id_str = str(user_id)
+    current_time = time.time()
+    with app.app_context():
+        cd = db.session.get(Cooldown, user_id_str)
+        if cd:
+            elapsed = current_time - cd.last_used
+            if elapsed < cooldown_time:
+                remaining = cooldown_time - elapsed
+                return False, f"⏳ Попробуй через {int(remaining // 3600)}ч {int((remaining % 3600) // 60)}мин."
+            cd.last_used = current_time
         else:
-            status = "💔 МАЛЕНЬКАЯ ГАЛДА"
+            cd = Cooldown(user_id=user_id_str, last_used=current_time)
+            db.session.add(cd)
+        db.session.commit()
+    return True, None
 
-        response = (
-            f"📊 ТВОЯ СТАТИСТИКА:\n\n"
-            f"👤 Имя: {user_data['username']}\n"
-            f"{status}\n"
-            f"📏 Размер галды: {user_data['galda_size']} анечек\n"
-            f"🍪 Проиграно печенек: {user_data.get('cookies_lost', 0)}\n"
-            f"📅 Зарегистрирован: {user_data.get('created_at', 'сегодня')[:10]}"
-        )
-        bot.reply_to(message, response)
+@bot.message_handler(commands=["start"])
+def send_start_message(message):
+    ensure_user_exists(message.from_user.id, message.from_user.first_name)
+    bot.reply_to(message, "👋 Привет! Я бот для измерения галды.\n/galda - измерить\n/my_stat - стата\n/all_stat - топ")
 
-    @bot.message_handler(commands=["all_stat"])
-    def show_all_stat(message):
-        with data_lock:
-            if not users:
-                bot.reply_to(message, "😔 Пока нет данных о пользователях")
-                return
+@bot.message_handler(commands=["galda", "galdafon", "galdishechka", "galdazaraza"])
+def send_random_message(message):
+    user_id = message.from_user.id
+    ensure_user_exists(user_id, message.from_user.first_name)
+    can_proceed, error_msg = check_cooldown(user_id)
+    if not can_proceed:
+        bot.reply_to(message, error_msg or "⏳ Попробуй позже.")
+        return
+    
+    change = random.randint(-15, 15)
+    with app.app_context():
+        user = db.session.get(User, str(user_id))
+        if user:
+            user.galda_size = max(1, user.galda_size + change)
+            db.session.commit()
+            response = f"🎯 Твоя галда {'выросла' if change > 0 else 'уменьшилась'} на {abs(change)}!\n📏 Теперь она {user.galda_size} анечек!"
+            bot.reply_to(message, response)
 
-            sorted_users_list = sorted(users.items(),
-                                 key=lambda x: x[1].get('galda_size', 0),
-                                 reverse=True)
+@bot.message_handler(commands=["my_stat"])
+def show_my_stat(message):
+    with app.app_context():
+        user = db.session.get(User, str(message.from_user.id))
+        if user:
+            bot.reply_to(message, f"📊 Твоя стата:\n📏 Галда: {user.galda_size}\n🍪 Проиграно: {user.cookies_lost}")
 
-            stat_text = "🏆 ТОП ГАЛДУНОВ:\n\n"
+@bot.message_handler(commands=["all_stat"])
+def show_all_stat(message):
+    with app.app_context():
+        top_users = db.session.query(User).order_by(User.galda_size.desc()).limit(10).all()
+        text = "🏆 ТОП ГАЛДУНОВ:\n"
+        for i, u in enumerate(top_users, 1):
+            text += f"{i}. {u.username}: {u.galda_size}\n"
+        bot.reply_to(message, text)
 
-            for idx, (user_id, user_data) in enumerate(sorted_users_list, 1):
-                username = user_data.get('username', 'Unknown')[:20]
-                size = user_data.get('galda_size', 0)
-                cookies_lost = user_data.get('cookies_lost', 0)
-
-                medal = ""
-                if idx == 1: medal = "🥇 "
-                elif idx == 2: medal = "🥈 "
-                elif idx == 3: medal = "🥉 "
-                elif idx <= 10: medal = "🔸 "
-                else: medal = "🔹 "
-
-                stat_text += f"{medal}{idx}. {username}: {size} анечек"
-                if cookies_lost > 0:
-                    stat_text += f" ({cookies_lost}🍪)"
-                stat_text += "\n"
-
-                if len(stat_text) > 3500:
-                    stat_text += f"\n... и еще {len(sorted_users_list) - idx} пользователей"
-                    break
-
-            total_users = len(users)
-            total_cookies = sum(u.get('cookies_lost', 0) for u in users.values())
-            avg_size = sum(u.get('galda_size', 0) for u in users.values()) / total_users if total_users > 0 else 0
-
-            stat_text += f"\n📊 ОБЩАЯ СТАТИСТИКА:\n"
-            stat_text += f"👥 Всего игроков: {total_users}\n"
-            stat_text += f"📏 Средний размер: {avg_size:.1f} анечек\n"
-            stat_text += f"🍪 Всего проиграно печенек: {total_cookies}"
-
-        bot.reply_to(message, stat_text)
-
-    def start_roulette_animation(chat_id, players):
-        global active_game
-
-        msg = bot.send_message(chat_id, "🎰 Запускается рулетка...")
-
-        player_names = [get_user_display_name(p) for p in players]
-
-        for _ in range(5):
-            with game_lock:
-                if active_game is None:
-                    return
-            current = random.choice(player_names)
-            try:
-                bot.edit_message_text(
-                    f"🎰 На печеньку дрочит...\n\n🔹 {current}",
-                    chat_id, msg.message_id
-                )
-            except:
-                pass
-            time.sleep(0.3)
-
-        for _ in range(3):
-            with game_lock:
-                if active_game is None:
-                    return
-            current = random.choice(player_names)
-            try:
-                bot.edit_message_text(
-                    f"🎰 На печеньку дрочит...\n\n🔸 {current}",
-                    chat_id, msg.message_id
-                )
-            except:
-                pass
-            time.sleep(0.6)
-
-        loser_id = random.choice(players)
-        loser_name = get_user_display_name(loser_id)
-
+def run_bot():
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
+    while True:
         try:
-            bot.edit_message_text(
-                f"🎯 ПЕЧЕНЬКА В КОНЧЕ!\n\n🎯 ВЫБРАН: {loser_name}",
-                chat_id, msg.message_id
-            )
-        except:
-            pass
-
-        time.sleep(1)
-
-        apply_cookie_penalty(chat_id, loser_id, players, msg.message_id)
-
-    def apply_cookie_penalty(chat_id, loser_id, players, msg_id):
-        global active_game
-
-        loser_id_str = str(loser_id)
-
-        with data_lock:
-            if loser_id_str in users:
-                penalty = random.randint(15, 35)
-                old_size = users[loser_id_str]["galda_size"]
-                users[loser_id_str]["galda_size"] = max(1, old_size - penalty)
-                users[loser_id_str]["cookies_lost"] = users[loser_id_str].get("cookies_lost", 0) + 1
-                loser_name = get_user_display_name(loser_id)
-
-        participants_text = "🎮 Участники рулетки:\n"
-        for i, player_id in enumerate(players, 1):
-            player_name = get_user_display_name(player_id)
-            marker = "🎯" if player_id == loser_id else "🔹"
-            participants_text += f"{marker} {i}. {player_name}\n"
-
-        result = (
-            f"🍪 ПЕЧЕНЬКА СЪЕДЕНА!\n\n"
-            f"{participants_text}\n"
-            f"💀 Проиграл: {loser_name}\n"
-            f"📉 Его галда уменьшилась на {penalty} анечек!\n"
-            f"🍪 Теперь у него {users[loser_id_str]['cookies_lost']} проигранных печенек!"
-        )
-
-        save_all_data()
-
-        try:
-            bot.edit_message_text(result, chat_id, msg_id)
-            loser_mention = f"💀 <a href='tg://user?id={loser_id}'>Проигравший</a>, твоя галда уменьшилась! 🍪"
-            bot.send_message(chat_id, loser_mention, parse_mode='HTML')
+            bot.polling(none_stop=True)
         except Exception as e:
-            print(f"Ошибка отправки: {e}")
+            print(f"Error: {e}")
+            time.sleep(5)
 
-        with game_lock:
-            active_game = None
-
-        with data_lock:
-            cookie_cooldown_data['time'] = time.time() + 5400
-            save_data(COOKIE_COOLDOWN_FILE, cookie_cooldown_data)
-
-    @bot.message_handler(commands=["cookie"])
-    def start_cookie_game(message):
-        global active_game
-
-        with data_lock:
-            current_time = time.time()
-            cookie_cooldown = cookie_cooldown_data.get('time', 0)
-
-            if current_time < cookie_cooldown:
-                remaining = cookie_cooldown - current_time
-                hours = int(remaining // 3600)
-                minutes = int((remaining % 3600) // 60)
-                bot.reply_to(message, f"⏳ Игру в печеньку можно будет начать через {hours}ч {minutes}мин.")
-                return
-
-        with game_lock:
-            if active_game is not None:
-                bot.reply_to(message, "🎮 Игра уже идет! Дождись окончания.")
-                return
-
-            player_count = random.randint(3, 7)
-            players = get_random_players(player_count)
-
-            if len(players) < 2:
-                bot.reply_to(message, "❌ Недостаточно игроков в базе! Нужно минимум 2.")
-                return
-
-            active_game = {
-                "players": players,
-                "chat_id": message.chat.id
-            }
-
-        players_text = "🎮 Участники рулетки:\n"
-        for i, player_id in enumerate(players, 1):
-            player_name = get_user_display_name(player_id)
-            players_text += f"🔹 {i}. {player_name}\n"
-
-        response = (
-            f"🍪 НАЧИНАЕТСЯ ИГРА В ПЕЧЕНЬКУ!\n\n"
-            f"{players_text}\n"
-            f"🎰 Начинается выбор проигравшего...\n"
-            f"💀 Проигравший получит уменьшение галды!"
-        )
-
-        sent_message = bot.reply_to(message, response)
-
-        roulette_thread = threading.Thread(
-            target=start_roulette_animation,
-            args=(message.chat.id, players)
-        )
-        roulette_thread.daemon = True
-        roulette_thread.start()
-
-    @bot.message_handler(commands=["cookie_stats"])
-    def show_cookie_stats(message):
-        global active_game
-
-        with data_lock:
-            current_time = time.time()
-            cookie_cooldown = cookie_cooldown_data.get('time', 0)
-
-        with game_lock:
-            if active_game is not None:
-                players_text = "🎮 Текущая игра:\n"
-                for i, player_id in enumerate(active_game["players"], 1):
-                    player_name = get_user_display_name(player_id)
-                    players_text += f"{i}. {player_name}\n"
-
-                bot.reply_to(message, f"🍪 Идет игра!\n{players_text}")
-            elif current_time < cookie_cooldown:
-                remaining = cookie_cooldown - current_time
-                hours = int(remaining // 3600)
-                minutes = int((remaining % 3600) // 60)
-                bot.reply_to(message, f"⏳ Следующая игра через {hours}ч {minutes}мин")
-            else:
-                bot.reply_to(message, "✅ Игра доступна! Используй /cookie")
-
-    @bot.message_handler(commands=["stats"])
-    def stats_command(message):
-        with data_lock:
-            total_users = len(users)
-            total_cookies = sum(u.get('cookies_lost', 0) for u in users.values())
-
-            if users:
-                avg_size = sum(u['galda_size'] for u in users.values()) / total_users
-                max_size = max(u['galda_size'] for u in users.values())
-                max_users = [u for u in users.values() if u['galda_size'] == max_size]
-                max_user = max_users[0]['username'] if max_users else "нет"
-            else:
-                avg_size = 0
-                max_size = 0
-                max_user = "нет"
-
-        response = (
-            f"📈 ОБЩАЯ СТАТИСТИКА:\n\n"
-            f"👥 Всего игроков: {total_users}\n"
-            f"📏 Средний размер: {avg_size:.1f} анечек\n"
-            f"🏆 Рекорд: {max_size} анечек ({max_user})\n"
-            f"🍪 Всего проиграно печенек: {total_cookies}\n"
-            f"⚙️ Бот работает на Replit.com"
-        )
-
-        bot.reply_to(message, response)
-
-    def run_bot():
-        print("=" * 60)
-        print("🤖 GALDA BOT ЗАПУСКАЕТСЯ НА REPLIT")
-        print("=" * 60)
-
-        # Загружаем данные при старте
-        load_all_data()
-
-        save_thread = threading.Thread(target=auto_save, daemon=True)
-        save_thread.start()
-
-        web_thread = threading.Thread(target=run_web, daemon=True)
-        web_thread.start()
-
-        time.sleep(2)
-
-        while True:
-            try:
-                bot.polling(none_stop=True, interval=1, timeout=30)
-            except KeyboardInterrupt:
-                print("Бот остановлен пользователем")
-                save_all_data()
-                break
-            except Exception as e:
-                print(f"❌ Ошибка: {e}")
-                time.sleep(5)
-                continue
-
-    if __name__ == "__main__":
-        run_bot()
+if __name__ == "__main__":
+    run_bot()
