@@ -8,7 +8,7 @@ from flask import Flask, render_template_string
 import telebot
 
 # ===== НАСТРОЙКИ =====
-TOKEN = "8129099142:AAFIDgn3njqe3uTKV5pbJLH6Pypc8xsWuF8"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8129099142:AAFIDgn3njqe3uTKV5pbJLH6Pypc8xsWuF8")
 PORT = 5000
 
 # ===== FLASK СЕРВЕР =====
@@ -149,12 +149,7 @@ def send_start_message(message):
 def send_help_message(message):
     help_text = """<<Основные команды>>
 /start, /help, /galda, /galdafon, /galdishechka, /galdazaraza
-/my_stat, /all_stat, /cookie, /cookie_stats
-
-✨ Дополнительно:
-/ping - проверить работу бота
-/stats - общая статистика
-"""
+/my_stat, /all_stat, /cookie, /cookie_stats"""
     bot.reply_to(message, help_text)
 
 # 3. GALDA (основная команда)
@@ -436,11 +431,6 @@ def show_cookie_stats(message):
     else:
         bot.reply_to(message, "✅ Игра доступна! Используй /cookie")
 
-# 8. PING
-@bot.message_handler(commands=["ping"])
-def ping_command(message):
-    bot.reply_to(message, f"🏓 pong!\n🕐 {datetime.now().strftime('%H:%M:%S')}\n👥 Пользователей: {len(users)}")
-
 # 9. STATS
 @bot.message_handler(commands=["stats"])
 def stats_command(message):
@@ -485,7 +475,7 @@ def run_bot():
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
 
-    time.sleep(2)  # Даем время Flask запуститься
+    time.sleep(2) 
 
     # Запускаем бота с перезапуском при ошибках
     while True:
