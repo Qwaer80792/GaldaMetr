@@ -7,11 +7,9 @@ from datetime import datetime
 from flask import Flask, render_template_string
 import telebot
 
-# ===== НАСТРОЙКИ =====
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8129099142:AAFIDgn3njqe3uTKV5pbJLH6Pypc8xsWuF8")
+TOKEN = "8129099142:AAFIDgn3njqe3uTKV5pbJLH6Pypc8xsWuF8"
 PORT = 5000
 
-# ===== FLASK СЕРВЕР =====
 app = Flask(__name__)
 
 @app.route('/')
@@ -46,10 +44,8 @@ def health():
 def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
-# ===== ТЕЛЕГРАМ БОТ =====
 bot = telebot.TeleBot(TOKEN)
 
-# ===== БАЗА ДАННЫХ =====
 USERS_FILE = 'users.json'
 COOLDOWN_FILE = 'cooldowns.json'
 
@@ -69,17 +65,17 @@ def save_data(filename, data):
 
 users = load_data(USERS_FILE)
 cooldowns = load_data(COOLDOWN_FILE)
-cookie_cooldown = load_data('cookie_cd.json', {}).get('time', 0)
+
+cookie_cooldown_data = load_data('cookie_cd.json', {})
+cookie_cooldown = cookie_cooldown_data.get('time', 0)
 active_game = None
 
-# Автосохранение
 def auto_save():
     while True:
         time.sleep(300)
         save_data(USERS_FILE, users)
         save_data(COOLDOWN_FILE, cooldowns)
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def ensure_user_exists(user_id, username=None):
     if user_id not in users:
         users[user_id] = {
@@ -119,9 +115,6 @@ def check_cooldown(user_id, cooldown_time=1800):
     save_data(COOLDOWN_FILE, cooldowns)
     return True, None
 
-# ===== КОМАНДЫ БОТА =====
-
-# 1. START
 @bot.message_handler(commands=["start"])
 def send_start_message(message):
     user_id = str(message.from_user.id)
@@ -144,7 +137,6 @@ def send_start_message(message):
 
     bot.reply_to(message, welcome_text)
 
-# 2. HELP
 @bot.message_handler(commands=["help"])
 def send_help_message(message):
     help_text = """<<Основные команды>>
@@ -152,7 +144,6 @@ def send_help_message(message):
 /my_stat, /all_stat, /cookie, /cookie_stats"""
     bot.reply_to(message, help_text)
 
-# 3. GALDA (основная команда)
 @bot.message_handler(commands=["galda", "galdafon", "galdishechka", "galdazaraza"])
 def send_random_message(message):
     user_id = str(message.from_user.id)
@@ -163,7 +154,7 @@ def send_random_message(message):
 
     can_proceed, error_msg = check_cooldown(user_id)
     if not can_proceed:
-        bot.reply_to(message, error_msg)
+        bot.reply_to(message, error_msg or "⏳ Попробуй позже.")
         return
 
     phrases = [
@@ -187,7 +178,6 @@ def send_random_message(message):
     save_data(USERS_FILE, users)
     bot.reply_to(message, response)
 
-# 4. MY_STAT
 @bot.message_handler(commands=["my_stat"])
 def show_my_stat(message):
     user_id = str(message.from_user.id)
@@ -199,7 +189,6 @@ def show_my_stat(message):
     user_data = users[user_id]
     size = user_data['galda_size']
 
-    # Определяем статус
     if size >= 100:
         status = "🏆 ГИГАНТСКАЯ ГАЛДА"
     elif size >= 70:
@@ -221,7 +210,6 @@ def show_my_stat(message):
     )
     bot.reply_to(message, response)
 
-# 5. ALL_STAT
 @bot.message_handler(commands=["all_stat"])
 def show_all_stat(message):
     if not users:
@@ -255,7 +243,6 @@ def show_all_stat(message):
             stat_text += f"\n... и еще {len(sorted_users_list) - idx} пользователей"
             break
 
-    # Добавляем общую статистику
     total_users = len(users)
     total_cookies = sum(u.get('cookies_lost', 0) for u in users.values())
     avg_size = sum(u.get('galda_size', 0) for u in users.values()) / total_users if total_users > 0 else 0
@@ -267,16 +254,13 @@ def show_all_stat(message):
 
     bot.reply_to(message, stat_text)
 
-# 6. COOKIE GAME
 def start_roulette_animation(chat_id, players):
     global active_game
 
-    # Отправляем начальное сообщение
     msg = bot.send_message(chat_id, "🎰 Запускается рулетка...")
 
     player_names = [get_user_display_name(p) for p in players]
 
-    # Фаза ускорения (быстрая смена имен)
     for _ in range(5):
         if active_game is None:
             return
@@ -290,7 +274,6 @@ def start_roulette_animation(chat_id, players):
             pass
         time.sleep(0.3)
 
-    # Фаза замедления
     for _ in range(3):
         if active_game is None:
             return
@@ -304,7 +287,6 @@ def start_roulette_animation(chat_id, players):
             pass
         time.sleep(0.6)
 
-    # Финальный выбор
     loser_id = random.choice(players)
     loser_name = get_user_display_name(loser_id)
 
@@ -318,7 +300,6 @@ def start_roulette_animation(chat_id, players):
 
     time.sleep(1)
 
-    # Применяем штраф
     apply_cookie_penalty(chat_id, loser_id, players, msg.message_id)
 
 def apply_cookie_penalty(chat_id, loser_id, players, msg_id):
@@ -363,7 +344,6 @@ def start_cookie_game(message):
 
     current_time = time.time()
 
-    # Проверка кулдауна (1.5 часа)
     if current_time < cookie_cooldown:
         remaining = cookie_cooldown - current_time
         hours = int(remaining // 3600)
@@ -401,7 +381,6 @@ def start_cookie_game(message):
 
     sent_message = bot.reply_to(message, response)
 
-    # Запускаем рулетку в отдельном потоке
     roulette_thread = threading.Thread(
         target=start_roulette_animation,
         args=(message.chat.id, players)
@@ -409,7 +388,6 @@ def start_cookie_game(message):
     roulette_thread.daemon = True
     roulette_thread.start()
 
-# 7. COOKIE_STATS
 @bot.message_handler(commands=["cookie_stats"])
 def show_cookie_stats(message):
     global active_game, cookie_cooldown
@@ -431,7 +409,6 @@ def show_cookie_stats(message):
     else:
         bot.reply_to(message, "✅ Игра доступна! Используй /cookie")
 
-# 9. STATS
 @bot.message_handler(commands=["stats"])
 def stats_command(message):
     total_users = len(users)
@@ -457,37 +434,26 @@ def stats_command(message):
 
     bot.reply_to(message, response)
 
-# ===== ЗАПУСК =====
 def run_bot():
     print("=" * 60)
     print("🤖 GALDA BOT ЗАПУСКАЕТСЯ НА REPLIT")
     print("=" * 60)
-    print(f"✅ Токен: {TOKEN[:10]}...")
-    print(f"👥 Пользователей загружено: {len(users)}")
-    print(f"🌐 Веб-сервер на порту {PORT}")
-    print("=" * 60)
 
-    # Запускаем автосохранение
     save_thread = threading.Thread(target=auto_save, daemon=True)
     save_thread.start()
 
-    # Запускаем веб-сервер
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
 
-    time.sleep(2) 
+    time.sleep(2)
 
-    # Запускаем бота с перезапуском при ошибках
     while True:
         try:
-            print("🔄 Запуск polling...")
             bot.polling(none_stop=True, interval=1, timeout=30)
         except KeyboardInterrupt:
-            print("\n⏹ Остановлено пользователем")
             break
         except Exception as e:
             print(f"❌ Ошибка: {e}")
-            print("🔄 Перезапуск через 5 секунд...")
             time.sleep(5)
             continue
 
